@@ -1,13 +1,28 @@
-import transformers
-from transformers import AutoTokenizer
-import datasets
 import pandas as pd
 import numpy as np
 import argparse
 import os
-from datasets import load_dataset
+import subprocess
+import sys
 
-if __name__ == "__main__":
+
+
+def install(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+if __name__=='__main__':
+    
+    
+    print('Going to install missing libraries')
+    install('torch')
+    install('transformers')
+    install('datasets[s3]')
+    print('Installed missing libraries')
+    
+    import transformers, datasets
+    from transformers import AutoTokenizer
+    from datasets import load_dataset
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-name", type=str)
     parser.add_argument("--datasubset-name", type=str)
@@ -44,6 +59,6 @@ if __name__ == "__main__":
     test_ds = test_ds.map(tokenize, batched=True, batch_size=len(test_ds))
 
     # upload data to S3
-    train_ds.save_to_disk('/opt/ml/processing/training/')
+    train_ds.save_to_disk('/opt/ml/processing/train/')
     val_ds.save_to_disk('/opt/ml/processing/validation/')
     test_ds.save_to_disk('/opt/ml/processing/test/')

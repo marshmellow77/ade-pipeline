@@ -25,7 +25,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_dir", type=str, default=os.environ["SM_MODEL_DIR"])
     parser.add_argument("--n_gpus", type=str, default=os.environ["SM_NUM_GPUS"])
     parser.add_argument("--training_dir", type=str, default=os.environ["SM_CHANNEL_TRAIN"])
-    parser.add_argument("--val_dir", type=str, default=os.environ["SM_CHANNEL_VAL"])
+    parser.add_argument("--val_dir", type=str, default=os.environ["SM_CHANNEL_VALIDATION"])
 
     args, _ = parser.parse_known_args()
 

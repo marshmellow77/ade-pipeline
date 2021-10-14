@@ -1,11 +1,9 @@
 """Example workflow pipeline script for abalone pipeline.
-
                                                . -RegisterModel
                                               .
     Process-> Train -> Evaluate -> Condition .
                                               .
                                                . -(stop)
-
 Implements a get_pipeline(**kwargs) method.
 """
 import os
@@ -26,7 +24,8 @@ from sagemaker.processing import (
     ScriptProcessor,
 )
 from sagemaker.sklearn.processing import SKLearnProcessor
-from sagemaker.workflow.conditions import ConditionLessThanOrEqualTo
+from sagemaker.huggingface import HuggingFace
+from sagemaker.workflow.conditions import ConditionLessThanOrEqualTo, ConditionGreaterThanOrEqualTo
 from sagemaker.workflow.condition_step import (
     ConditionStep,
     JsonGet,
@@ -48,11 +47,9 @@ BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
 def get_sagemaker_client(region):
      """Gets the sagemaker client.
-
         Args:
             region: the aws region to start the session
             default_bucket: the bucket to use for storing the artifacts
-
         Returns:
             `sagemaker.session.Session instance
         """
@@ -63,11 +60,9 @@ def get_sagemaker_client(region):
 
 def get_session(region, default_bucket):
     """Gets the sagemaker session based on the region.
-
     Args:
         region: the aws region to start the session
         default_bucket: the bucket to use for storing the artifacts
-
     Returns:
         `sagemaker.session.Session instance
     """
@@ -101,17 +96,15 @@ def get_pipeline(
     sagemaker_project_arn=None,
     role=None,
     default_bucket=None,
-    model_package_group_name="AbalonePackageGroup",
-    pipeline_name="AbalonePipeline",
-    base_job_prefix="Abalone",
+    model_package_group_name="ADEPackageGroup",
+    pipeline_name="ADEPipeline",
+    base_job_prefix="ADE",
 ):
     """Gets a SageMaker ML Pipeline instance working with on abalone data.
-
     Args:
         region: AWS region to create and run the pipeline.
         role: IAM role to create and run steps and pipeline.
         default_bucket: the bucket to use for storing the artifacts
-
     Returns:
         an instance of a pipeline
     """
@@ -125,27 +118,36 @@ def get_pipeline(
         name="ProcessingInstanceType", default_value="ml.m5.xlarge"
     )
     training_instance_type = ParameterString(
-        name="TrainingInstanceType", default_value="ml.m5.xlarge"
+        name="TrainingInstanceType", default_value="ml.p3.2xlarge"
     )
     model_approval_status = ParameterString(
         name="ModelApprovalStatus", default_value="PendingManualApproval"
     )
-    input_data = ParameterString(
-        name="InputDataUrl",
-        default_value=f"s3://sagemaker-servicecatalog-seedcode-{region}/dataset/abalone-dataset.csv",
+    
+    training_image_uri = sagemaker.image_uris.retrieve(
+        framework="huggingface",
+        region=region,
+        version="4.11.0",
+        instance_type=training_instance_type,
+        image_scope='training',
+        base_framework_version='pytorch1.9.0'
     )
+    
+    
+ # ================================= Pre-Processing DataSet =================================
 
-    # processing step for feature engineering
     sklearn_processor = SKLearnProcessor(
         framework_version="0.23-1",
         instance_type=processing_instance_type,
         instance_count=processing_instance_count,
-        base_job_name=f"{base_job_prefix}/sklearn-abalone-preprocess",
+        base_job_name=f"{base_job_prefix}/pytorch-ade-preprocess",
         sagemaker_session=sagemaker_session,
         role=role,
     )
+    
+    
     step_process = ProcessingStep(
-        name="PreprocessAbaloneData",
+        name="PreprocessADEData",
         processor=sklearn_processor,
         outputs=[
             ProcessingOutput(output_name="train", source="/opt/ml/processing/train"),
@@ -153,94 +155,135 @@ def get_pipeline(
             ProcessingOutput(output_name="test", source="/opt/ml/processing/test"),
         ],
         code=os.path.join(BASE_DIR, "preprocess.py"),
-        job_arguments=["--input-data", input_data],
-    )
+        job_arguments = ["--dataset-name", "ade_corpus_v2",
+                         "--datasubset-name", "Ade_corpus_v2_classification",
+                         "--model-name", "distilbert-base-uncased",
+                         "--train-ratio", "0.7",
+                         "--val-ratio", "0.15"],
 
-    # training step for generating model artifacts
-    model_path = f"s3://{sagemaker_session.default_bucket()}/{base_job_prefix}/AbaloneTrain"
-    image_uri = sagemaker.image_uris.retrieve(
-        framework="xgboost",
-        region=region,
-        version="1.0-1",
-        py_version="py3",
-        instance_type=training_instance_type,
     )
-    xgb_train = Estimator(
-        image_uri=image_uri,
-        instance_type=training_instance_type,
+    
+
+    
+ # ================================= Training the model =================================
+
+    hyperparameters={'epochs': 1,
+                     'train_batch_size': 32,
+                     'model_name':'distilbert-base-uncased'
+                     }
+    
+    hf_estimator = HuggingFace(
+        entry_point='train.py',
+        source_dir=BASE_DIR,
+        instance_type='ml.p3.2xlarge',
         instance_count=1,
-        output_path=model_path,
-        base_job_name=f"{base_job_prefix}/abalone-train",
-        sagemaker_session=sagemaker_session,
         role=role,
-    )
-    xgb_train.set_hyperparameters(
-        objective="reg:linear",
-        num_round=50,
-        max_depth=5,
-        eta=0.2,
-        gamma=4,
-        min_child_weight=6,
-        subsample=0.7,
-        silent=0,
-    )
+        transformers_version='4.11.0',
+        pytorch_version='1.9.0',
+        py_version='py38',
+        output_path=f's3://{default_bucket}/{base_job_prefix}/training_output/',
+        base_job_name="az-ade-training",
+        hyperparameters=hyperparameters,
+        disable_profiler=True,
+)
+
     step_train = TrainingStep(
-        name="TrainAbaloneModel",
-        estimator=xgb_train,
+        name="TrainADEModel",
+        estimator=hf_estimator,
+#         inputs={
+#             "train": TrainingInput(
+#                 s3_data=step_process.properties.ProcessingOutputConfig.Outputs[
+#                     "train"
+#                 ].S3Output.S3Uri,
+#                 content_type="text/csv",
+#             ),
+#             "validation": TrainingInput(
+#                 s3_data=step_process.properties.ProcessingOutputConfig.Outputs[
+#                     "validation"
+#                 ].S3Output.S3Uri,
+#                 content_type="text/csv",
+#             ),
+#         },
         inputs={
             "train": TrainingInput(
-                s3_data=step_process.properties.ProcessingOutputConfig.Outputs[
-                    "train"
-                ].S3Output.S3Uri,
+                s3_data='s3://sagemaker-eu-west-1-500844994152/ADE/pytorch-ade-preprocess-2021-10-14-11-09-46-884/output/train',
                 content_type="text/csv",
             ),
             "validation": TrainingInput(
-                s3_data=step_process.properties.ProcessingOutputConfig.Outputs[
-                    "validation"
-                ].S3Output.S3Uri,
+                s3_data='s3://sagemaker-eu-west-1-500844994152/ADE/pytorch-ade-preprocess-2021-10-14-11-09-46-884/output/validation',
                 content_type="text/csv",
             ),
         },
     )
 
-    # processing step for evaluation
+    
+    
+ # ================================= Evaluating the model on the test set =================================
+    
+    
     script_eval = ScriptProcessor(
-        image_uri=image_uri,
+        image_uri=training_image_uri,
         command=["python3"],
-        instance_type=processing_instance_type,
+        instance_type=training_instance_type,
         instance_count=1,
-        base_job_name=f"{base_job_prefix}/script-abalone-eval",
+        base_job_name=f"{base_job_prefix}/script-ade-eval",
         sagemaker_session=sagemaker_session,
         role=role,
     )
+    
     evaluation_report = PropertyFile(
-        name="AbaloneEvaluationReport",
+        name="ADEEvaluationReport",
         output_name="evaluation",
         path="evaluation.json",
     )
+    
     step_eval = ProcessingStep(
-        name="EvaluateAbaloneModel",
+        name="EvaluateADEModel",
         processor=script_eval,
+#         inputs=[
+#             ProcessingInput(
+#                 source=step_train.properties.ModelArtifacts.S3ModelArtifacts,
+#                 destination="/opt/ml/processing/model",
+#             ),
+#             ProcessingInput(
+#                 source=step_process.properties.ProcessingOutputConfig.Outputs[
+#                     "test"
+#                 ].S3Output.S3Uri,
+#                 destination="/opt/ml/processing/test",
+#             ),
+#         ],
         inputs=[
             ProcessingInput(
-                source=step_train.properties.ModelArtifacts.S3ModelArtifacts,
+                source='s3://sagemaker-eu-west-1-500844994152/ADE/training_output/pipelines-iquxwp90xtvj-TrainADEModel-UWWOiv9HFt/output/model.tar.gz',
                 destination="/opt/ml/processing/model",
             ),
             ProcessingInput(
-                source=step_process.properties.ProcessingOutputConfig.Outputs[
-                    "test"
-                ].S3Output.S3Uri,
+                source='s3://sagemaker-eu-west-1-500844994152/ADE/pytorch-ade-preprocess-2021-10-13-19-33-27-137/output/test',
                 destination="/opt/ml/processing/test",
             ),
         ],
+        
+        
         outputs=[
             ProcessingOutput(output_name="evaluation", source="/opt/ml/processing/evaluation"),
         ],
         code=os.path.join(BASE_DIR, "evaluate.py"),
         property_files=[evaluation_report],
     )
+    
+    
+    
+ # ================================= Registering the Model =================================
 
-    # register model step that will be conditionally executed
+    inference_image_uri = sagemaker.image_uris.retrieve(
+        framework="huggingface",
+        region=region,
+        version="4.11.0",
+        instance_type='ml.m5.xlarge',
+        image_scope='inference',
+        base_framework_version='pytorch1.9.0'
+    )
+
     model_metrics = ModelMetrics(
         model_statistics=MetricsSource(
             s3_uri="{}/evaluation.json".format(
@@ -249,30 +292,33 @@ def get_pipeline(
             content_type="application/json"
         )
     )
+    
     step_register = RegisterModel(
-        name="RegisterAbaloneModel",
-        estimator=xgb_train,
+        name="RegisterADEModel",
+        estimator=hf_estimator,
+        image_uri=inference_image_uri,
         model_data=step_train.properties.ModelArtifacts.S3ModelArtifacts,
         content_types=["text/csv"],
         response_types=["text/csv"],
-        inference_instances=["ml.t2.medium", "ml.m5.large"],
-        transform_instances=["ml.m5.large"],
+        inference_instances=["ml.m5.xlarge","ml.m5.2xlarge"],
+        transform_instances=["ml.m5.xlarge"],
         model_package_group_name=model_package_group_name,
         approval_status=model_approval_status,
         model_metrics=model_metrics,
     )
 
     # condition step for evaluating model quality and branching execution
-    cond_lte = ConditionLessThanOrEqualTo(
+    cond_lte = ConditionGreaterThanOrEqualTo(
         left=JsonGet(
             step=step_eval,
             property_file=evaluation_report,
-            json_path="regression_metrics.mse.value"
+            json_path="eval_f1"
         ),
-        right=6.0,
+        right=0.6,
     )
+    
     step_cond = ConditionStep(
-        name="CheckMSEAbaloneEvaluation",
+        name="CheckF1ADEEvaluation",
         conditions=[cond_lte],
         if_steps=[step_register],
         else_steps=[],
@@ -286,9 +332,12 @@ def get_pipeline(
             processing_instance_count,
             training_instance_type,
             model_approval_status,
-            input_data,
         ],
-        steps=[step_process, step_train, step_eval, step_cond],
+#         steps=[step_process, step_train, step_eval, step_cond],
+#         steps=[step_process,step_train, step_eval],
+        steps = [step_eval],
         sagemaker_session=sagemaker_session,
     )
+    
+    
     return pipeline
