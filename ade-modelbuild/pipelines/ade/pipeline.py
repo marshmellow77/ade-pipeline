@@ -53,9 +53,9 @@ def get_sagemaker_client(region):
         Returns:
             `sagemaker.session.Session instance
         """
-     boto_session = boto3.Session(region_name=region)
-     sagemaker_client = boto_session.client("sagemaker")
-     return sagemaker_client
+    boto_session = boto3.Session(region_name=region)
+    sagemaker_client = boto_session.client("sagemaker")
+    return sagemaker_client
 
 
 def get_session(region, default_bucket):
@@ -136,11 +136,12 @@ def get_pipeline(
     
  # ================================= Pre-Processing DataSet =================================
 
-    sklearn_processor = SKLearnProcessor(
-        framework_version="0.23-1",
-        instance_type=processing_instance_type,
+    script_preprocess = ScriptProcessor(
+        image_uri=training_image_uri,
+        command=["python3"],
+        instance_type=training_instance_type,
         instance_count=processing_instance_count,
-        base_job_name=f"{base_job_prefix}/pytorch-ade-preprocess",
+        base_job_name=f"{base_job_prefix}/script-ade-preprocess",
         sagemaker_session=sagemaker_session,
         role=role,
     )
@@ -148,7 +149,7 @@ def get_pipeline(
     
     step_process = ProcessingStep(
         name="PreprocessADEData",
-        processor=sklearn_processor,
+        processor=script_preprocess,
         outputs=[
             ProcessingOutput(output_name="train", source="/opt/ml/processing/train"),
             ProcessingOutput(output_name="validation", source="/opt/ml/processing/validation"),
@@ -190,28 +191,16 @@ def get_pipeline(
     step_train = TrainingStep(
         name="TrainADEModel",
         estimator=hf_estimator,
-#         inputs={
-#             "train": TrainingInput(
-#                 s3_data=step_process.properties.ProcessingOutputConfig.Outputs[
-#                     "train"
-#                 ].S3Output.S3Uri,
-#                 content_type="text/csv",
-#             ),
-#             "validation": TrainingInput(
-#                 s3_data=step_process.properties.ProcessingOutputConfig.Outputs[
-#                     "validation"
-#                 ].S3Output.S3Uri,
-#                 content_type="text/csv",
-#             ),
-#         },
         inputs={
             "train": TrainingInput(
-                s3_data='s3://sagemaker-eu-west-1-500844994152/ADE/pytorch-ade-preprocess-2021-10-14-11-09-46-884/output/train',
-                content_type="text/csv",
+                s3_data=step_process.properties.ProcessingOutputConfig.Outputs[
+                    "train"
+                ].S3Output.S3Uri
             ),
             "validation": TrainingInput(
-                s3_data='s3://sagemaker-eu-west-1-500844994152/ADE/pytorch-ade-preprocess-2021-10-14-11-09-46-884/output/validation',
-                content_type="text/csv",
+                s3_data=step_process.properties.ProcessingOutputConfig.Outputs[
+                    "validation"
+                ].S3Output.S3Uri
             ),
         },
     )
@@ -226,51 +215,39 @@ def get_pipeline(
         command=["python3"],
         instance_type=training_instance_type,
         instance_count=1,
-        base_job_name=f"{base_job_prefix}/script-ade-eval",
+        base_job_name=f"{default_bucket}/script-ade-eval",
         sagemaker_session=sagemaker_session,
         role=role,
     )
-    
+
     evaluation_report = PropertyFile(
         name="ADEEvaluationReport",
         output_name="evaluation",
         path="evaluation.json",
     )
-    
+
     step_eval = ProcessingStep(
         name="EvaluateADEModel",
         processor=script_eval,
-#         inputs=[
-#             ProcessingInput(
-#                 source=step_train.properties.ModelArtifacts.S3ModelArtifacts,
-#                 destination="/opt/ml/processing/model",
-#             ),
-#             ProcessingInput(
-#                 source=step_process.properties.ProcessingOutputConfig.Outputs[
-#                     "test"
-#                 ].S3Output.S3Uri,
-#                 destination="/opt/ml/processing/test",
-#             ),
-#         ],
-        inputs=[
-            ProcessingInput(
-                source='s3://sagemaker-eu-west-1-500844994152/ADE/training_output/pipelines-iquxwp90xtvj-TrainADEModel-UWWOiv9HFt/output/model.tar.gz',
-                destination="/opt/ml/processing/model",
-            ),
-            ProcessingInput(
-                source='s3://sagemaker-eu-west-1-500844994152/ADE/pytorch-ade-preprocess-2021-10-13-19-33-27-137/output/test',
-                destination="/opt/ml/processing/test",
-            ),
-        ],
-        
-        
-        outputs=[
-            ProcessingOutput(output_name="evaluation", source="/opt/ml/processing/evaluation"),
-        ],
+            inputs=[
+                ProcessingInput(
+                    source=step_train.properties.ModelArtifacts.S3ModelArtifacts,
+                    destination="/opt/ml/processing/model",
+                ),
+                ProcessingInput(
+                    source=step_process.properties.ProcessingOutputConfig.Outputs[
+                        "test"
+                    ].S3Output.S3Uri,
+                    destination="/opt/ml/processing/test",
+                ),
+            ],
+            outputs=[
+                ProcessingOutput(output_name="evaluation", source="/opt/ml/processing/evaluation"),
+            ],
+
         code=os.path.join(BASE_DIR, "evaluate.py"),
         property_files=[evaluation_report],
     )
-    
     
     
  # ================================= Registering the Model =================================
@@ -308,7 +285,7 @@ def get_pipeline(
     )
 
     # condition step for evaluating model quality and branching execution
-    cond_lte = ConditionGreaterThanOrEqualTo(
+    cond_gte = ConditionGreaterThanOrEqualTo(
         left=JsonGet(
             step=step_eval,
             property_file=evaluation_report,
@@ -316,14 +293,14 @@ def get_pipeline(
         ),
         right=0.6,
     )
-    
+
     step_cond = ConditionStep(
         name="CheckF1ADEEvaluation",
-        conditions=[cond_lte],
+        conditions=[cond_gte],
         if_steps=[step_register],
         else_steps=[],
     )
-
+    
     # pipeline instance
     pipeline = Pipeline(
         name=pipeline_name,
@@ -333,9 +310,9 @@ def get_pipeline(
             training_instance_type,
             model_approval_status,
         ],
-#         steps=[step_process, step_train, step_eval, step_cond],
+        steps=[step_process, step_train, step_eval, step_cond],
 #         steps=[step_process,step_train, step_eval],
-        steps = [step_eval],
+#         steps = [step_eval],
         sagemaker_session=sagemaker_session,
     )
     

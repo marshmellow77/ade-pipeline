@@ -1,28 +1,13 @@
+import transformers
+from transformers import AutoTokenizer
+import datasets
 import pandas as pd
 import numpy as np
 import argparse
 import os
-import subprocess
-import sys
+from datasets import load_dataset
 
-
-
-def install(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-if __name__=='__main__':
-    
-    
-    print('Going to install missing libraries')
-    install('torch')
-    install('transformers')
-    install('datasets[s3]')
-    print('Installed missing libraries')
-    
-    import transformers, datasets
-    from transformers import AutoTokenizer
-    from datasets import load_dataset
-    
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-name", type=str)
     parser.add_argument("--datasubset-name", type=str)
