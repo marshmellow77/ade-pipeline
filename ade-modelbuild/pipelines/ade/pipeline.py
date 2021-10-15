@@ -282,7 +282,7 @@ def get_pipeline(
         left=JsonGet(
             step=step_eval,
             property_file=evaluation_report,
-            json_path="eval_f1"
+            json_path="binary_classification_metrics.f1.value"
         ),
         right=0.6,
     )
