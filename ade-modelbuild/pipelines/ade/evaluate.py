@@ -32,10 +32,31 @@ if __name__ == "__main__":
     
     eval_result = trainer.evaluate(eval_dataset=test_dataset)
     
+    report_dict = {
+        "binary_classification_metrics": {
+            "f1": {
+                "value": eval_result['eval_f1'],
+                "standard_deviation": 'NaN'
+            },
+            "accuracy": {
+                "value": eval_result['eval_accuracy'],
+                "standard_deviation": 'NaN'
+            },
+            "precision": {
+                "value": eval_result['eval_precision'],
+                "standard_deviation": 'NaN'
+            },
+            "recall": {
+                "value": eval_result['eval_recall'],
+                "standard_deviation": 'NaN'
+            },
+        },
+    }
+    
     output_dir = "/opt/ml/processing/evaluation"
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
     
     evaluation_path = f"{output_dir}/evaluation.json"
     
     with open(evaluation_path, "w") as f:
-        f.write(json.dumps(eval_result))
+        f.write(json.dumps(report_dict))
