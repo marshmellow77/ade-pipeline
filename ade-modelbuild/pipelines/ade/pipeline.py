@@ -46,13 +46,6 @@ from sagemaker.workflow.step_collections import RegisterModel
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
 def get_sagemaker_client(region):
-     """Gets the sagemaker client.
-        Args:
-            region: the aws region to start the session
-            default_bucket: the bucket to use for storing the artifacts
-        Returns:
-            `sagemaker.session.Session instance
-        """
     boto_session = boto3.Session(region_name=region)
     sagemaker_client = boto_session.client("sagemaker")
     return sagemaker_client
